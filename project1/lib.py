@@ -49,32 +49,33 @@ Returns
 x : 2D Numpy Array
     Solution after relaxation.
 """
-@jit((double[:,:],double[:,:], double),nopython=True,nogil=True)
+@jit(double[:,:](double[:,:],double[:,:], double),nopython=True,nogil=True)
 def gauss_seidel_iteration(x, b, h = None):
 
     m = x.shape[0]
     
+    next_iter = np.zeros_like(x)
+
     if not h:
         h = 1./(m-1)
     
     for i in range(m):
         for j in range(m):
-            x[i,j] = -b[i,j] * h**2 
+            next_iter[i,j] = b[i,j] * h**2 
             
             #Check if we aren't in a boundary
             #otherwise we substract 0
             if i > 0:
-                x[i,j] += x[i-1,j]
+                next_iter[i,j] -= next_iter[i-1,j]
             if i < (m -1):
-                x[i,j] += x[i+1,j]
+                next_iter[i,j] -= x[i+1,j]
             if j > 0:
-                x[i,j] += x[i,j-1]
+                next_iter[i,j] -= next_iter[i,j-1]
             if j < (m -1):
-                x[i,j] += x[i,j+1]
+                next_iter[i,j] -= x[i,j+1]
             
-            x[i,j] /= 4.
-            
-    return 
+            next_iter[i,j] /= -4.
+    return next_iter
 
 """
 Create the right part of the Poisson Equation using the grid data.
@@ -127,16 +128,20 @@ def calculate_residue(x,b, h = None):
     A_x = np.zeros((n_x,n_y))
     for i in range(n_x):
         for j in range(n_y):
-            node_sum = -4*x[i,j]
+            node_sum = 0
             if i > 0:
-                node_sum += x[i-1,j]
-            if i < (n_x -1):
-                node_sum += x[i+1,j]
+                node_sum += x[i-1,j]/h**2
+
             if j > 0:
-                node_sum += x[i,j-1]
-            if j < (n_y -1):
-                node_sum += x[i,j+1]
-            node_sum /= h**2
+                node_sum += x[i,j-1]/h**2
+
+            node_sum += -4*x[i,j]/h**2
+            
+            if i+1 != n_x :
+                node_sum += x[i+1,j]/h**2
+            
+            if j+1 != n_y:
+                node_sum += x[i,j+1]/h**2
             A_x[i,j] =  node_sum
     errors = b - A_x
     return errors
@@ -186,7 +191,7 @@ def gauss_seidel(m, atol = 1e-3, plot=False, random_seed = -1, demo = False):
     iters = 0
     
     while r > atol:
-        gauss_seidel_iteration(v,f,h)
+        v = gauss_seidel_iteration(v,f,h)
         
         r = np.linalg.norm(calculate_residue(v,f,h))
         
@@ -217,15 +222,18 @@ rC : 2D Array
 @jit(double[:,:](double[:,:], boolean), nopython=True,nogil=True)
 def restrict(r, fullweight=True):
     m = len(r)
-    mC = int((m-1)/2+1)
+    if m %2==0:
+        mC = int(m/2)
+    else:
+        mC = int((m-1)/2+1)
 
     rC = np.zeros((mC,mC))
 
     for i in range(mC):
         for j in range(mC):
             rC[i,j] = r[2*i,2*j]
-            #Injection doesn't use this ones
 
+            #Injection doesn't use this ones
             if fullweight:
                 if 2*i > 0:
                     rC[i,j] += 0.5 * r[2*i-1,2*j]
@@ -237,16 +245,16 @@ def restrict(r, fullweight=True):
                     rC[i,j] += 0.5 * r[2*i,2*j+1]
 
 
-                if 2*i > 0 and 2*j < m-1:            
-                    rC[i,j] += 0.25 * r[2*i-1,2*j+1]
-                if 2*i < m-1 and 2*j < m-1:
-                    rC[i,j] += 0.25 * r[2*i+1,2*j+1]
-                if 2*i > 0 and 2*j > 0:                
-                    rC[i,j] += 0.25 * r[2*i-1,2*j-1]
-                if 2*i < m-1 and 2*j > 0:                    
-                    rC[i,j] += 0.25 * r[2*i+1,2*j-1]
+                # if 2*i > 0 and 2*j < m-1:            
+                #     rC[i,j] += 0.25 * r[2*i-1,2*j+1]
+                # if 2*i < m-1 and 2*j < m-1:
+                #     rC[i,j] += 0.25 * r[2*i+1,2*j+1]
+                # if 2*i > 0 and 2*j > 0:                
+                #     rC[i,j] += 0.25 * r[2*i-1,2*j-1]
+                # if 2*i < m-1 and 2*j > 0:                    
+                #     rC[i,j] += 0.25 * r[2*i+1,2*j-1]
                 
-                rC[i,j] *= 0.25    
+            rC[i,j] *= 0.25    
 
     return rC
 
@@ -263,10 +271,11 @@ Returns
 r : 2D Array
     The residue in the finer grid.
 """
-@jit(double[:,:](double[:,:]), nopython=True,nogil=True)
-def interpolate(rC):
-    m = ((rC.shape[0]-1)*2)+1
-    
+@jit(double[:,:](double[:,:],int32), nopython=True,nogil=True)
+def interpolate(rC, m = None):
+    if not m:
+        m = ((rC.shape[0]-1)*2)+1
+
     r = np.zeros((m,m))
 
 
@@ -297,8 +306,7 @@ def interpolate(rC):
                     r[2*i+1,2*j+1] += rC[i+1,j+1]
                 r[2*i+1,2*j+1] *= 0.25 
 
-
-    # 8 neightbors
+    # # 8 neightbors
     # for i in range(rC.shape[0]):
     #     for j in range(rC.shape[1]):
             
@@ -341,7 +349,8 @@ index in the linearized matrix
 """
 @jit(int32(int32,int32,int32), nopython=True, nogil=True)
 def linearize(x,y,m):
-    return x+y*m
+    return y+x*m
+
 
 """
 Create the full dense system for poisson equation.
@@ -391,6 +400,23 @@ def create_system(m,h=None):
             
     return A
 
+@jit(double[:](double[:,:]), nopython=True,nogil=True)
+def flatten(b):
+    x,y = b.shape
+    b_f = np.zeros(x*y)
+    for i in range(x):
+        for j in range(y):
+            b_f[linearize(i,j,x)] = b[i,j]
+    return b_f
+
+@jit(double[:,:](double[:]), nopython=True,nogil=True)
+def unflatten(x):
+    m = int(np.sqrt(len(x)))
+    b_uf = np.zeros((m,m))
+    for i in range(m):
+        for j in range(m):
+            b_uf[i,j] = x[linearize(i,j,m)]
+    return b_uf 
 
 """
 A single iteration of V-Cycle using the recursive form.
@@ -417,61 +443,71 @@ ops: float
     Number of Gauss Seidel relaxation compared
     to the same number of nodes.
 """
-def vcycle_iteration(x,b, h = None, v1 = 2, v2=2, fullweight=True,plot=False, ax=None, fig=None):
+def vcycle_iteration(x,b,min_m = None, h = None, v1 = 2, v2=2, fullweight=True,plot=False, ax=None, fig=None):
+    if not min_m:
+        min_m = 3
     m = x.shape[0]
     if not h:
         h = 1./(m-1)
-    
-    if m %2 != 0 and m > 5:
-        print x.shape
+
+    if m > min_m:
         #Do v1 gauss_seidel iterations
-        for i in range(v1):
-            gauss_seidel_iteration(x,b,h)
+        for it in range(v1):
+            x = gauss_seidel_iteration(x,b,h)
             
             if plot and fig and ax:
-                ax.set_title("Resolution: {}x{}".format(m,m))
+                r = np.linalg.norm(calculate_residue(x,b,h))
+
+                ax.set_title("V1 ({}): Resolution: {}x{} \n Residue: {}".format(it,m,m,r))
                 ax.imshow(x)
-                fig.canvas.draw()    
+                fig.canvas.draw()  
+                #time.sleep(1)
 
         r = calculate_residue(x,b,h)
+
         #Restrict r
         residC = restrict(r,fullweight=fullweight)
         
         #Calculate Ae=r in coarser grid
-        eC = np.zeros(residC.shape)
-        mC = len(eC)
+        mC = len(residC)
         hC = 1./(mC-1)
-        iter_ops = vcycle_iteration(eC,residC,h = hC, v1 = v1, v2=v2, fullweight=fullweight,plot=plot, ax=ax, fig=fig)
+        eC,iter_ops = vcycle_iteration(np.zeros((mC,mC)),residC,min_m = min_m,h = hC, v1 = v1, v2=v2, fullweight=fullweight,plot=plot, ax=ax, fig=fig)
 
         iter_ops /= 4.
         
         #Interpolate x
-        x = x + interpolate(eC)
+        x = x + interpolate(eC,m=m)
         
         #Run v2 times gauss seidel iterations
-        for i in range(v2):
-            gauss_seidel_iteration(x,b,h)
+        for it in range(v2):
+            x = gauss_seidel_iteration(x,b,h)
             
             if plot and fig and ax:
-                ax.set_title("Resolution: {}x{}".format(m,m))
+                r = np.linalg.norm(calculate_residue(x,b,h))
+
+                ax.set_title("V1 ({}): Resolution: {}x{} \n Residue: {}".format(it,m,m,r))
                 ax.imshow(x)
                 fig.canvas.draw()
-        
-
-        return v1+v2+iter_ops
+                #time.sleep(1)
+                
+        return x,v1+v2+iter_ops
     else:
-        if m > 11:
-            raise Exception("Grid Too big for direct solver {}x{}".format(m,m))
         #Create full matrix
         #And solve using a direct solver
-
-
         A = create_system(m,h=h)
         shapeF = b.shape
-        b = b.flatten()
-        x = np.linalg.solve(A,b).reshape(shapeF)
-        return 0
+        b = flatten(b)
 
+        x = unflatten(np.linalg.solve(A,b))
+        if plot and fig and ax:
+            b = unflatten(b)
+            r = np.linalg.norm(calculate_residue(x,b,h))
+
+            ax.set_title("Direct: Resolution: {}x{}\n Residue: {}".format(m,m,r))
+            ax.imshow(x)
+            fig.canvas.draw()
+            #time.sleep(1)
+        return x , 0
 
 """
 The V-cycle implementation.
@@ -508,10 +544,7 @@ ops : float
     Total Number of Gauss seidel iterations compared to 
     the same number of nodes.
 """
-def vcycle(m, v1 = 2, v2=2, atol = 1e-3, rest_type=None,plot=False, random_seed = -1,demo = False):
-    if m%2==0:
-        raise Exception("This implementation works only with odd grids")
-    
+def vcycle(m, min_m = None,v1 = 2, v2=2, atol = 1e-3, rest_type=None,plot=False, random_seed = -1,demo = False):
     if rest_type:
         if rest_type == "injection":
             fullweight = False
@@ -544,15 +577,26 @@ def vcycle(m, v1 = 2, v2=2, atol = 1e-3, rest_type=None,plot=False, random_seed 
     r = np.linalg.norm(calculate_residue(v,f,h))
     iters = 0
     ops_total = 0 
+
     while r > atol:
-        ops = vcycle_iteration(v,f, h = h, v1 = v1, v2=v2, fullweight = fullweight,plot = plot, fig=fig, ax = ax)
+
+        v,ops = vcycle_iteration(v,f,min_m=min_m, h = h, v1 = v1, v2=v2, fullweight = fullweight,plot = plot, fig=fig, ax = ax)
+
         r = np.linalg.norm(calculate_residue(v,f,h))
 
         iters += 1
         ops_total +=ops
 
+        if plot and fig and ax:
+            ax.set_title("Iter:{} Resolution: {}x{} \n Residue {}".format(iters,m,m,r))
+            ax.imshow(v)
+            fig.canvas.draw()
+            #time.sleep(1)
+
+        
         if demo and iters == 1:
             break
+
     return v,iters,ops_total
 
 
@@ -607,15 +651,18 @@ ops: float
     Number of iterations compared to a Gauss Seidel with the 
     same number of nodes 
 """
-def multigrid_iter(x,b, h = None,v0=1, v1 = 2, v2=2, fullweight=True, plot=False, ax=None, fig=None):
+def multigrid_iter(x,b,min_m = None, h = None,v0=1, v1 = 2, v2=2, fullweight=True, plot=False, ax=None, fig=None):
     
+    if not min_m:
+        min_m = 4
+
     m = len(x)
     if not h:
         h = 1./(m-1)
     
-    if m == calculate_coarser(m):
+    if m == calculate_coarser(m) or m == min_m:
         for i in range(v0):
-            x,ops = vcycle_iteration(x,b,h=h,v1=v1,v2=v2,fullweight=fullweight,plot=plot,ax=ax,fig=fig)
+            x,ops = vcycle_iteration(x,b,min_m = min_m,h=h,v1=v1,v2=v2,fullweight=fullweight,plot=plot,ax=ax,fig=fig)
         return x,ops
         
     else:
@@ -625,12 +672,13 @@ def multigrid_iter(x,b, h = None,v0=1, v1 = 2, v2=2, fullweight=True, plot=False
 
         mC = len(xC)
         hC = 1./(mC-1)
-        eC,opsC = multigrid_iter(xC,eC,h=hC,v0=v0,v1=v1,v2=v2,fullweight=fullweight,plot=plot,ax=ax,fig=fig)
+        eC,opsC = multigrid_iter(xC,eC,min_m= min_m,h=hC,v0=v0,v1=v1,v2=v2,fullweight=fullweight,plot=plot,ax=ax,fig=fig)
         
         
-        x = x + interpolate(eC)
+        x = x + interpolate(eC,m=m)
+
         for i in range(v0):
-            x,ops = vcycle_iteration(x, b, h=h , v1=v1,v2=v2,fullweight=fullweight,plot=plot,ax=ax,fig=fig)
+            x,ops = vcycle_iteration(x, b, min_m = min_m,h=h , v1=v1,v2=v2,fullweight=fullweight,plot=plot,ax=ax,fig=fig)
         return x,ops+opsC/4.
 
 
@@ -670,10 +718,8 @@ total_ops:
     Number of Gauss seidel iterations with the same amount of nodes.
 
 """
-def full_multigrid(m,v0=1,v1=2,v2=2, plot=False,rest_type=None, atol=1e-3, random_seed= -1, demo=False):
-    if m%2==0:
-        raise Exception("This implementation works only with odd grids")
-    
+def full_multigrid(m,min_m = None,v0=1,v1=2,v2=2, plot=False,rest_type=None, atol=1e-3, random_seed= -1, demo=False):
+ 
     if rest_type:
         if rest_type == "injection":
             fullweight = False
@@ -689,10 +735,8 @@ def full_multigrid(m,v0=1,v1=2,v2=2, plot=False,rest_type=None, atol=1e-3, rando
     else:
         fig,ax = (None,None)
     
-    coarser = calculate_coarser(m)
+    coarser = min_m if min_m else calculate_coarser(m)
     
-    if coarser > 10:
-        raise Exception("Coarser grid too big for direct solver {}x{}".format(coarser,coarser))
 
     h = 1./(m-1)
     
@@ -711,7 +755,7 @@ def full_multigrid(m,v0=1,v1=2,v2=2, plot=False,rest_type=None, atol=1e-3, rando
     iters = 0
     ops_total = 0
     while r > atol:
-        v,ops = multigrid_iter(v,f,h = h, v0 = v0, v1=v1, v2=v2, fullweight=fullweight, plot=plot, ax=ax, fig=fig)
+        v,ops = multigrid_iter(v,f,min_m=min_m,h = h, v0 = v0, v1=v1, v2=v2, fullweight=fullweight, plot=plot, ax=ax, fig=fig)
         r = np.linalg.norm(calculate_residue(v,f,h))
         iters += 1
         ops_total += ops
@@ -722,7 +766,10 @@ def full_multigrid(m,v0=1,v1=2,v2=2, plot=False,rest_type=None, atol=1e-3, rando
 
 
 
-def experiment1(tol = 1e-8, node_list_initial=range(3,300,2), rest_type=None):
+def experiment1(tol = 1e-8, node_list_initial=range(3,300,2),min_m_list=None, rest_type=None):
+    if not min_m_list:
+        min_m_list = [3] * len(node_list_initial)
+
     gauss_iters = []
     vcycle_iters = []
     fmg_iters = []
@@ -741,16 +788,16 @@ def experiment1(tol = 1e-8, node_list_initial=range(3,300,2), rest_type=None):
     node_list= []
 
     print("Starting Experiment")
-    for nodes in node_list_initial:
+    for nodes,min_m in zip(node_list_initial,min_m_list):
         try:
             u = create_solution(nodes)
             
             t0_f = time.time()
-            v_f,i_f,ops_f=full_multigrid(nodes,atol=tol, rest_type=rest_type)
+            v_f,i_f,ops_f=full_multigrid(nodes,min_m = min_m,atol=tol, rest_type=rest_type)
             t1_f = time.time()
             
             t0_v = time.time()    
-            v_v,i_v,ops_v=vcycle(nodes,atol=tol, rest_type=rest_type)
+            v_v,i_v,ops_v=vcycle(nodes,atol=tol,min_m = min_m, rest_type=rest_type)
             t1_v = time.time()
 
             t0_g = time.time()
