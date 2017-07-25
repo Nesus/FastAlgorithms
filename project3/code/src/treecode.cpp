@@ -2,14 +2,6 @@
 #include <stdlib.h>
 #include <math.h>
 
-struct cell{
-  int nleaf,nchild;
-  int* leaf;
-  double xc,yc,zc,r;
-  double multipole[10];
-  cell *parent,*child[8];
-};
-
 void initialize(cell *C, int NCRIT) {
   C->nleaf = C->nchild = 0;
   C->parent = NULL;
